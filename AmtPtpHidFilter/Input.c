@@ -117,6 +117,39 @@ PtpFilterInputIssueTransportRequest(
 }
 
 static
+BOOLEAN
+PtpFilterIsTipSwitchSet(
+	_In_ UINT32 FingerState,
+	_In_ BOOLEAN IgnoreNearFingers
+)
+{
+	// Observed MT2 state values:
+	//   2 = Hover/Floating
+	//   3 = ToTouch transition
+	//   4 = Touch
+	//   6 = Leave/near after touch
+	//
+	// Stage 1 policy: report 3 and 4 as valid contacts so the "second finger joins
+	// on click frame" path reaches Windows with TipSwitch set. Keep 2 non-contact,
+	// and do not promote 6 until it is validated separately.
+	switch (FingerState)
+	{
+	case 3:
+	case 4:
+		return TRUE;
+	case 2:
+		return FALSE;
+	default:
+		if (IgnoreNearFingers && (FingerState & 0x2))
+		{
+			return FALSE;
+		}
+
+		return (FingerState & 0x4) ? TRUE : FALSE;
+	}
+}
+
+static
 VOID
 PtpFilterInputParseMT2Report(
 	_In_ PUCHAR Buffer,
@@ -191,12 +224,10 @@ PtpFilterInputParseMT2Report(
 
 		ptpOutputReport.Contacts[i].ContactID = f->Id;
 
-		// 0x1 = Transition between states
-		// 0x2 = Floating finger
-		// 0x4 = Contact/Valid
-		// I've gotten 0x6 if I press on the trackpad and then keep my finger close
-		// Note: These values come from my MBP9,2. These also are valid on my MT2
-		ptpOutputReport.Contacts[i].TipSwitch = (f->State & 0x4) && (driverContext->IgnoreNearFingers == FALSE ? TRUE : !(f->State & 0x2));
+		ptpOutputReport.Contacts[i].TipSwitch = PtpFilterIsTipSwitchSet(
+			f->State,
+			driverContext->IgnoreNearFingers
+		);
 
 		// The Microsoft spec says reject any input larger than 25mm. This is not ideal
 		// for Magic Trackpad 2 - so we raised the threshold a bit higher.
