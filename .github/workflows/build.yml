@@ -76,14 +76,30 @@ jobs:
         env:
           TEST_CERT_PASSWORD: ${{ secrets.TEST_CERT_PASSWORD }}
         run: |
-          $sdkBin = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } | Sort-Object FullName -Descending | Select-Object -First 1
-          $inf2cat = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter inf2cat.exe | Where-Object { $_.FullName -match '\\x64\\inf2cat\.exe$' } | Sort-Object FullName -Descending | Select-Object -First 1
+          function Find-Tool($toolName) {
+            $candidates = @()
+
+            if (Test-Path "C:\Program Files (x86)\Windows Kits\10\bin") {
+              $candidates += Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter $toolName -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '\\x64\\' }
+            }
+
+            if (Test-Path "$pwd\packages") {
+              $candidates += Get-ChildItem "$pwd\packages" -Recurse -Filter $toolName -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '\\(x64|amd64)\\' -or $_.FullName -match '\\bin\\' }
+            }
+
+            return $candidates | Sort-Object FullName -Descending | Select-Object -First 1
+          }
+
+          $sdkBin = Find-Tool "signtool.exe"
+          $inf2cat = Find-Tool "inf2cat.exe"
 
           if (-not $sdkBin) {
             throw "signtool.exe not found in Windows Kits."
           }
           if (-not $inf2cat) {
-            throw "inf2cat.exe not found in Windows Kits."
+            throw "inf2cat.exe not found in Windows Kits or restored packages."
           }
 
           $packageDir = Join-Path $pwd "package\AMD64"
