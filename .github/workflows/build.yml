@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    name: Build Driver Package and Control Panel
+    name: Build Signed Driver Package and Control Panel
     permissions:
       contents: write
     runs-on: windows-2022
@@ -50,14 +50,102 @@ jobs:
           sed -i 's|</TimeStampServer>|</TimeStampServer><ApiValidator_Enable>false</ApiValidator_Enable>|g' ./AmtPtpHidFilter/AmtPtpHidFilter.vcxproj
           msbuild.exe ./AmtPtpDeviceUsbUm/MagicTrackpad2PtpDevice.vcxproj -p:Configuration=Release -p:Platform=x64
           msbuild.exe ./AmtPtpHidFilter/AmtPtpHidFilter.vcxproj -p:Configuration=Release -p:Platform=x64
-          msbuild.exe ./AmtPtpDeviceUsbUm/MagicTrackpad2PtpDevice.vcxproj -p:Configuration=Release -p:Platform=ARM64
-          msbuild.exe ./AmtPtpHidFilter/AmtPtpHidFilter.vcxproj -p:Configuration=Release -p:Platform=ARM64
           msbuild.exe ./AmtPtpControlPanel/AmtPtpControlPanel.csproj -p:Configuration=Release -p:Platform=AnyCPU
-          echo -e '.OPTION EXPLICIT\n.Set CabinetFileCountThreshold=0\n.Set FolderFileCountThreshold=0\n.Set FolderSizeThreshold=0\n.Set MaxCabinetSize=0\n.Set MaxDiskFileCount=0\n.Set MaxDiskSize=0\n.Set CompressionType=MSZIP\n.Set Cabinet=on\n.Set Compress=on\n.Set CabinetNameTemplate=drivers_x64.cab\n.Set DestinationDir=AMD64\nbuild\\AmtPtpDevice_AMD64.inf\tAmtPtpDevice.inf\nAmtPtpDeviceUsbUm\\build\\AmtPtpDeviceUsbUm\\x64\\Release\\AmtPtpDeviceUsbUm.dll\nAmtPtpHidFilter\\build\\AmtPtpHidFilter\\x64\\Release\\AmtPtpHidFilter.sys\nAmtPtpDeviceUsbUm\\build\\AmtPtpDeviceUsbUm\\x64\\Release\\AmtPtpDeviceUsbUm.pdb\nAmtPtpHidFilter\\build\\AmtPtpHidFilter\\x64\\Release\\AmtPtpHidFilter.pdb\n' > x64.ddf
-          echo -e '.OPTION EXPLICIT\n.Set CabinetFileCountThreshold=0\n.Set FolderFileCountThreshold=0\n.Set FolderSizeThreshold=0\n.Set MaxCabinetSize=0\n.Set MaxDiskFileCount=0\n.Set MaxDiskSize=0\n.Set CompressionType=MSZIP\n.Set Cabinet=on\n.Set Compress=on\n.Set CabinetNameTemplate=drivers_arm64.cab\n.Set DestinationDir=ARM64\nbuild\\AmtPtpDevice_ARM64.inf\tAmtPtpDevice.inf\nAmtPtpDeviceUsbUm\\build\\AmtPtpDeviceUsbUm\\ARM64\\Release\\AmtPtpDeviceUsbUm.dll\nAmtPtpHidFilter\\build\\AmtPtpHidFilter\\ARM64\\Release\\AmtPtpHidFilter.sys\nAmtPtpDeviceUsbUm\\build\\AmtPtpDeviceUsbUm\\ARM64\\Release\\AmtPtpDeviceUsbUm.pdb\nAmtPtpHidFilter\\build\\AmtPtpHidFilter\\ARM64\\Release\\AmtPtpHidFilter.pdb\n' > arm64.ddf
-          makecab -f x64.ddf && makecab -f arm64.ddf
+
+      - name: Import Test Signing Certificate
+        shell: pwsh
+        env:
+          TEST_CERT_PFX_B64: ${{ secrets.TEST_CERT_PFX_B64 }}
+          TEST_CERT_PASSWORD: ${{ secrets.TEST_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TEST_CERT_PFX_B64)) {
+            throw "Missing TEST_CERT_PFX_B64 secret."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TEST_CERT_PASSWORD)) {
+            throw "Missing TEST_CERT_PASSWORD secret."
+          }
+
+          New-Item -ItemType Directory -Force signing | Out-Null
+          [IO.File]::WriteAllBytes("$pwd\signing\mt2-test.pfx", [Convert]::FromBase64String($env:TEST_CERT_PFX_B64))
+          $securePassword = ConvertTo-SecureString $env:TEST_CERT_PASSWORD -AsPlainText -Force
+          $imported = Import-PfxCertificate -FilePath "$pwd\signing\mt2-test.pfx" -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable
+          Export-Certificate -Cert $imported -FilePath "$pwd\signing\mt2-test.cer" -Force | Out-Null
+
+      - name: Stage and Sign Driver Package
+        shell: pwsh
+        env:
+          TEST_CERT_PASSWORD: ${{ secrets.TEST_CERT_PASSWORD }}
+        run: |
+          $sdkBin = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } | Sort-Object FullName -Descending | Select-Object -First 1
+          $inf2cat = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter inf2cat.exe | Where-Object { $_.FullName -match '\\x64\\inf2cat\.exe$' } | Sort-Object FullName -Descending | Select-Object -First 1
+
+          if (-not $sdkBin) {
+            throw "signtool.exe not found in Windows Kits."
+          }
+          if (-not $inf2cat) {
+            throw "inf2cat.exe not found in Windows Kits."
+          }
+
+          $packageDir = Join-Path $pwd "package\AMD64"
+          New-Item -ItemType Directory -Force $packageDir | Out-Null
+
+          Copy-Item "$pwd\build\AmtPtpDevice_AMD64.inf" (Join-Path $packageDir "AmtPtpDevice.inf")
+          Copy-Item "$pwd\AmtPtpDeviceUsbUm\build\AmtPtpDeviceUsbUm\x64\Release\AmtPtpDeviceUsbUm.dll" $packageDir
+          Copy-Item "$pwd\AmtPtpHidFilter\build\AmtPtpHidFilter\x64\Release\AmtPtpHidFilter.sys" $packageDir
+          Copy-Item "$pwd\AmtPtpDeviceUsbUm\build\AmtPtpDeviceUsbUm\x64\Release\AmtPtpDeviceUsbUm.pdb" $packageDir
+          Copy-Item "$pwd\AmtPtpHidFilter\build\AmtPtpHidFilter\x64\Release\AmtPtpHidFilter.pdb" $packageDir
+
+          & $inf2cat.FullName /driver:$packageDir /os:10_VB_X64
+          if ($LASTEXITCODE -ne 0) {
+            throw "inf2cat failed with exit code $LASTEXITCODE."
+          }
+
+          $signArgs = @(
+            'sign',
+            '/fd', 'SHA256',
+            '/f', "$pwd\signing\mt2-test.pfx",
+            '/p', $env:TEST_CERT_PASSWORD
+          )
+
+          & $sdkBin.FullName @signArgs (Join-Path $packageDir 'AmtPtpHidFilter.sys')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signing AmtPtpHidFilter.sys failed with exit code $LASTEXITCODE."
+          }
+
+          & $sdkBin.FullName @signArgs (Join-Path $packageDir 'AmtPtpDeviceUsbUm.dll')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signing AmtPtpDeviceUsbUm.dll failed with exit code $LASTEXITCODE."
+          }
+
+          $catFile = Get-ChildItem $packageDir -Filter *.cat | Select-Object -First 1
+          if (-not $catFile) {
+            throw "Catalog file not generated."
+          }
+
+          & $sdkBin.FullName @signArgs $catFile.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signing catalog failed with exit code $LASTEXITCODE."
+          }
+
+          & $sdkBin.FullName verify /v /kp (Join-Path $packageDir 'AmtPtpHidFilter.sys')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Kernel signature verification failed with exit code $LASTEXITCODE."
+          }
+
+          & $sdkBin.FullName verify /v /kp $catFile.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Catalog verification failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Package Signed Artifacts
+        shell: bash
+        run: |
+          echo -e '.OPTION EXPLICIT\n.Set CabinetFileCountThreshold=0\n.Set FolderFileCountThreshold=0\n.Set FolderSizeThreshold=0\n.Set MaxCabinetSize=0\n.Set MaxDiskFileCount=0\n.Set MaxDiskSize=0\n.Set CompressionType=MSZIP\n.Set Cabinet=on\n.Set Compress=on\n.Set CabinetNameTemplate=drivers_x64_signed.cab\n.Set DestinationDir=AMD64\npackage\\AMD64\\AmtPtpDevice.inf\npackage\\AMD64\\AmtPtpDevice.cat\npackage\\AMD64\\AmtPtpDeviceUsbUm.dll\npackage\\AMD64\\AmtPtpHidFilter.sys\npackage\\AMD64\\AmtPtpDeviceUsbUm.pdb\npackage\\AMD64\\AmtPtpHidFilter.pdb\n' > x64.ddf
+          makecab -f x64.ddf
           mkdir result
           cp AmtPtpControlPanel/bin/Release/AmtPtpControlPanel.exe result/
+          cp signing/mt2-test.cer result/
+          cp -r package/AMD64 result/
           mv disk1/*.cab result/
 
       - name: Upload Build Artifacts
