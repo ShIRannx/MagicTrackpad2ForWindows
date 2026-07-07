@@ -70,6 +70,8 @@ jobs:
           $securePassword = ConvertTo-SecureString $env:TEST_CERT_PASSWORD -AsPlainText -Force
           $imported = Import-PfxCertificate -FilePath "$pwd\signing\mt2-test.pfx" -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable
           Export-Certificate -Cert $imported -FilePath "$pwd\signing\mt2-test.cer" -Force | Out-Null
+          Import-Certificate -FilePath "$pwd\signing\mt2-test.cer" -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+          Import-Certificate -FilePath "$pwd\signing\mt2-test.cer" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
 
       - name: Stage and Sign Driver Package
         shell: pwsh
